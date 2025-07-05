@@ -405,8 +405,8 @@ int init_global_buffer_pool(void)
         return 0;
     }
     
-    /* Determine optimal buffer count based on system */
-    buffer_count = get_optimal_buffer_count(64); /* Assume ~64 concurrent operations */
+    /* Use optimal default buffer count for performance */
+    buffer_count = DEFAULT_BUFFER_COUNT;
     
     /* Create buffer pool with standard packet size */
     global_packet_pool = create_buffer_pool(DEFAULT_BUFFER_SIZE, buffer_count);
@@ -419,7 +419,7 @@ int init_global_buffer_pool(void)
     global_packet_pool->allow_fallback = 1;
     
     if (debug_level > 0) {
-        printf("Initialized global buffer pool: %zu buffers of %zu bytes each\n", 
+        printf("Initialized global buffer pool: %zu buffers of %zu bytes each (optimal defaults)\n", 
                buffer_count, (size_t)DEFAULT_BUFFER_SIZE);
     }
     
