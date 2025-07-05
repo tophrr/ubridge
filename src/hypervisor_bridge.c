@@ -601,10 +601,16 @@ static int cmd_add_packet_filter(hypervisor_conn_t *conn, int argc, char *argv[]
    }
 
    res = add_packet_filter(&bridge->packet_filters, argv[1], argv[2], argc-3, &argv[3]);
-   if (!res)
+   if (!res) {
+      /* Update optimized filter chain */
+      if (bridge->filter_chain) {
+          destroy_filter_chain(bridge->filter_chain);
+          bridge->filter_chain = convert_to_filter_chain(bridge->packet_filters);
+      }
       hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' type '%s' added to bridge '%s'", argv[1], argv[2], argv[0]);
-   else
+   } else {
       hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Failed to add filter '%s'", argv[1]);
+   }
    return (0);
 }
 
@@ -620,10 +626,16 @@ static int cmd_delete_packet_filter(hypervisor_conn_t *conn, int argc, char *arg
    }
 
    res = delete_packet_filter(&bridge->packet_filters, argv[1]);
-   if (!res)
+   if (!res) {
+      /* Update optimized filter chain */
+      if (bridge->filter_chain) {
+          destroy_filter_chain(bridge->filter_chain);
+          bridge->filter_chain = convert_to_filter_chain(bridge->packet_filters);
+      }
       hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' delete from bridge '%s'", argv[1], argv[0]);
-   else
+   } else {
       hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Failed to delete filter '%s'", argv[1]);
+   }
    return (0);
 }
 
@@ -639,6 +651,12 @@ static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *arg
 
    free_packet_filters(bridge->packet_filters);
    bridge->packet_filters = NULL;
+   
+   /* Clear optimized filter chain as well */
+   if (bridge->filter_chain) {
+       destroy_filter_chain(bridge->filter_chain);
+       bridge->filter_chain = create_filter_chain();
+   }
 
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
    return (0);

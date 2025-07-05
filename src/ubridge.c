@@ -36,6 +36,7 @@
 #include "pcap_capture.h"
 #include "packet_filter.h"
 #include "hypervisor.h"
+#include "buffer_pool.h"
 #ifdef __linux__
 #include "hypervisor_iol_bridge.h"
 #endif
@@ -46,21 +47,42 @@ bridge_t *bridge_list = NULL;
 int debug_level = 0;
 int hypervisor_mode = 0;
 
+/* Global buffer pool for packet processing */
+buffer_pool_t *global_packet_pool = NULL;
+
 static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
 {
   ssize_t bytes_received, bytes_sent;
-  unsigned char pkt[NIO_MAX_PKT_SIZE];
+  unsigned char *pkt;
   int drop_packet;
+  int is_pooled_buffer;
 
   while (1) {
+    /* Get packet buffer from global pool */
+    pkt = (unsigned char *)get_buffer(global_packet_pool);
+    is_pooled_buffer = (pkt != NULL);
+    
+    if (unlikely(pkt == NULL)) {
+        /* Fallback to stack allocation if pool is exhausted */
+        static unsigned char fallback_pkt[NIO_MAX_PKT_SIZE];
+        pkt = fallback_pkt;
+        if (unlikely(debug_level > 1))
+            printf("Using fallback buffer allocation on bridge '%s'\n", bridge->name);
+    }
 
     /* receive from the receiving NIO */
     drop_packet = FALSE;
-    bytes_received = nio_recv(rx_nio, &pkt, NIO_MAX_PKT_SIZE);
+    bytes_received = nio_recv(rx_nio, pkt, NIO_MAX_PKT_SIZE);
     if (unlikely(bytes_received == -1)) {
+        /* Return buffer to pool before handling error */
+        if (is_pooled_buffer) {
+            return_buffer(global_packet_pool, pkt);
+        }
         perror("recv");
-        if (errno == ECONNREFUSED || errno == ENETDOWN)
+        if (errno == ECONNREFUSED || errno == ENETDOWN) {
+           /* These are recoverable errors, continue with next iteration */
            continue;
+        }
         return -1;
     }
 
@@ -79,7 +101,16 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     }
 
     /* filter the packet if there is a filter configured */
-    if (unlikely(bridge->packet_filters != NULL)) {
+    if (unlikely(bridge->filter_chain != NULL && bridge->filter_chain->enabled_count > 0)) {
+         /* Use optimized array-based filter chain */
+         int filter_result = process_filter_chain(bridge->filter_chain, pkt, bytes_received);
+         if (unlikely(filter_result == FILTER_ACTION_DROP)) {
+             if (unlikely(debug_level > 0))
+                printf("Packet dropped by optimized filter chain on bridge '%s'\n", bridge->name);
+             drop_packet = TRUE;
+         }
+    } else if (unlikely(bridge->packet_filters != NULL)) {
+         /* Fallback to legacy linked-list filters for backward compatibility */
          packet_filter_t *filter = bridge->packet_filters;
          packet_filter_t *next;
          while (filter != NULL) {
@@ -94,8 +125,13 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
          }
      }
 
-    if (unlikely(drop_packet == TRUE))
+    if (unlikely(drop_packet == TRUE)) {
+       /* Return buffer to pool before continuing */
+       if (is_pooled_buffer) {
+           return_buffer(global_packet_pool, pkt);
+       }
        continue;
+    }
 
     /* dump the packet to a PCAP file if capture is activated */
     if (unlikely(bridge->capture != NULL))
@@ -107,6 +143,10 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     /* send what we received to the transmitting NIO */
     bytes_sent = nio_send(tx_nio, pkt, bytes_received);
     if (unlikely(bytes_sent == -1)) {
+        /* Return buffer to pool before handling error */
+        if (is_pooled_buffer) {
+            return_buffer(global_packet_pool, pkt);
+        }
         perror("send");
 
         /* EINVAL can be caused by sending to a blackhole route, this happens if a NIC link status changes */
@@ -123,6 +163,11 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
 
     tx_nio->packets_out++;
     tx_nio->bytes_out += bytes_sent;
+    
+    /* Return buffer to pool after successful processing */
+    if (is_pooled_buffer) {
+        return_buffer(global_packet_pool, pkt);
+    }
   }
   return 0;
 }
@@ -174,6 +219,9 @@ static void free_bridges(bridge_t *bridge)
     free_nio(bridge->destination_nio);
     free_pcap_capture(bridge->capture);
     free_packet_filters(bridge->packet_filters);
+    if (bridge->filter_chain) {
+        destroy_filter_chain(bridge->filter_chain);
+    }
     next = bridge->next;
     free(bridge);
     bridge = next;
@@ -281,6 +329,12 @@ int iniparser_error_handler(const char *format, ...)
 
 static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
 {
+   /* Initialize global buffer pool for packet processing */
+   if (init_global_buffer_pool() != 0) {
+       fprintf(stderr, "Failed to initialize global buffer pool\n");
+       exit(EXIT_FAILURE);
+   }
+
    if (hypervisor_mode) {
        struct sigaction act;
 
@@ -326,6 +380,9 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
          printf("Reloading configuration\n");
      }
    }
+   
+   /* Cleanup global buffer pool before exit */
+   cleanup_global_buffer_pool();
 }
 
 /* Display all network devices on this host */

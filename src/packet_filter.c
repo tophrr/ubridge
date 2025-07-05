@@ -494,3 +494,250 @@ int delete_packet_filter(packet_filter_t **packet_filters, char *filter_name)
    }
    return (-1);
 }
+
+/* ======================================================================== */
+/* Optimized Array-Based Filter Chain Implementation (Phase 2)             */
+/* ======================================================================== */
+
+#include <time.h>
+#include <string.h>
+
+/* Create a new optimized filter chain */
+filter_chain_t *create_filter_chain(void)
+{
+    filter_chain_t *chain = malloc(sizeof(filter_chain_t));
+    if (!chain) return NULL;
+    
+    memset(chain, 0, sizeof(filter_chain_t));
+    return chain;
+}
+
+/* Destroy filter chain */
+void destroy_filter_chain(filter_chain_t *chain)
+{
+    if (!chain) return;
+    
+    /* Free all filters */
+    for (int i = 0; i < chain->count; i++) {
+        if (chain->filters[i]) {
+            if (chain->filters[i]->free) {
+                chain->filters[i]->free(&chain->filters[i]->data);
+            }
+            if (chain->filters[i]->name) {
+                free(chain->filters[i]->name);
+            }
+            free(chain->filters[i]);
+        }
+    }
+    
+    free(chain);
+}
+
+/* Add filter to optimized chain */
+int add_filter_to_chain(filter_chain_t *chain, packet_filter_t *filter)
+{
+    if (!chain || !filter || chain->count >= MAX_FILTERS_PER_BRIDGE) {
+        return -1;
+    }
+    
+    /* Initialize performance fields */
+    filter->call_count = 0;
+    filter->drop_count = 0;
+    filter->total_time_ns = 0;
+    filter->flags = FILTER_FLAG_ENABLED;
+    
+    /* Determine filter characteristics for optimization */
+    switch (filter->type) {
+        case FILTER_TYPE_FREQUENCY_DROP:
+        case FILTER_TYPE_PACKET_LOSS:
+            filter->flags |= FILTER_FLAG_STATELESS | FILTER_FLAG_FAST;
+            filter->priority = 1; /* High priority for fast filters */
+            break;
+        case FILTER_TYPE_DELAY:
+            filter->priority = 255; /* Low priority for slow filters */
+            break;
+        case FILTER_TYPE_BPF:
+            filter->flags |= FILTER_FLAG_STATELESS;
+            filter->priority = 128; /* Medium priority */
+            break;
+        default:
+            filter->priority = 128;
+            break;
+    }
+    
+    /* Add to array */
+    chain->filters[chain->count] = filter;
+    chain->fast_handlers[chain->count] = filter->handler;
+    chain->fast_data[chain->count] = filter->data;
+    chain->count++;
+    chain->enabled_count++;
+    chain->version++;
+    
+    /* Sort filters by priority for optimal execution order */
+    if (chain->count > 1) {
+        for (int i = chain->count - 1; i > 0; i--) {
+            if (chain->filters[i]->priority < chain->filters[i-1]->priority) {
+                /* Swap filters */
+                packet_filter_t *temp_filter = chain->filters[i];
+                int (*temp_handler)(void*, size_t, void*) = chain->fast_handlers[i];
+                void *temp_data = chain->fast_data[i];
+                
+                chain->filters[i] = chain->filters[i-1];
+                chain->fast_handlers[i] = chain->fast_handlers[i-1];
+                chain->fast_data[i] = chain->fast_data[i-1];
+                
+                chain->filters[i-1] = temp_filter;
+                chain->fast_handlers[i-1] = temp_handler;
+                chain->fast_data[i-1] = temp_data;
+            } else {
+                break;
+            }
+        }
+    }
+    
+    return 0;
+}
+
+/* Remove filter from chain by name */
+int remove_filter_from_chain(filter_chain_t *chain, const char *filter_name)
+{
+    if (!chain || !filter_name) return -1;
+    
+    for (int i = 0; i < chain->count; i++) {
+        if (chain->filters[i] && strcmp(chain->filters[i]->name, filter_name) == 0) {
+            /* Free the filter */
+            if (chain->filters[i]->free) {
+                chain->filters[i]->free(&chain->filters[i]->data);
+            }
+            if (chain->filters[i]->name) {
+                free(chain->filters[i]->name);
+            }
+            free(chain->filters[i]);
+            
+            /* Shift remaining filters down */
+            for (int j = i; j < chain->count - 1; j++) {
+                chain->filters[j] = chain->filters[j + 1];
+                chain->fast_handlers[j] = chain->fast_handlers[j + 1];
+                chain->fast_data[j] = chain->fast_data[j + 1];
+            }
+            
+            chain->count--;
+            if (chain->filters[i] && (chain->filters[i]->flags & FILTER_FLAG_ENABLED)) {
+                chain->enabled_count--;
+            }
+            chain->version++;
+            return 0;
+        }
+    }
+    
+    return -1; /* Filter not found */
+}
+
+/* Enable filter in chain */
+void enable_filter_in_chain(filter_chain_t *chain, const char *filter_name)
+{
+    if (!chain || !filter_name) return;
+    
+    for (int i = 0; i < chain->count; i++) {
+        if (chain->filters[i] && strcmp(chain->filters[i]->name, filter_name) == 0) {
+            if (!(chain->filters[i]->flags & FILTER_FLAG_ENABLED)) {
+                chain->filters[i]->flags |= FILTER_FLAG_ENABLED;
+                chain->enabled_count++;
+                chain->version++;
+            }
+            return;
+        }
+    }
+}
+
+/* Disable filter in chain */
+void disable_filter_in_chain(filter_chain_t *chain, const char *filter_name)
+{
+    if (!chain || !filter_name) return;
+    
+    for (int i = 0; i < chain->count; i++) {
+        if (chain->filters[i] && strcmp(chain->filters[i]->name, filter_name) == 0) {
+            if (chain->filters[i]->flags & FILTER_FLAG_ENABLED) {
+                chain->filters[i]->flags &= ~FILTER_FLAG_ENABLED;
+                chain->enabled_count--;
+                chain->version++;
+            }
+            return;
+        }
+    }
+}
+
+/* Convert traditional linked list to optimized array-based chain */
+filter_chain_t *convert_to_filter_chain(packet_filter_t *linked_filters)
+{
+    filter_chain_t *chain = create_filter_chain();
+    if (!chain) return NULL;
+    
+    packet_filter_t *current = linked_filters;
+    while (current && chain->count < MAX_FILTERS_PER_BRIDGE) {
+        /* Create a copy of the filter for the chain */
+        packet_filter_t *filter_copy = malloc(sizeof(packet_filter_t));
+        if (!filter_copy) {
+            destroy_filter_chain(chain);
+            return NULL;
+        }
+        
+        memcpy(filter_copy, current, sizeof(packet_filter_t));
+        filter_copy->name = strdup(current->name);
+        filter_copy->next = NULL; /* Break the linked list connection */
+        
+        if (add_filter_to_chain(chain, filter_copy) != 0) {
+            free(filter_copy);
+            destroy_filter_chain(chain);
+            return NULL;
+        }
+        
+        current = current->next;
+    }
+    
+    return chain;
+}
+
+/* Get filter performance statistics */
+void get_filter_stats(packet_filter_t *filter, uint32_t *calls, uint32_t *drops, double *avg_time_us)
+{
+    if (!filter) return;
+    
+    if (calls) *calls = filter->call_count;
+    if (drops) *drops = filter->drop_count;
+    if (avg_time_us) {
+        *avg_time_us = filter->call_count > 0 ? 
+            (double)filter->total_time_ns / (double)filter->call_count / 1000.0 : 0.0;
+    }
+}
+
+/* Reset filter performance statistics */
+void reset_filter_stats(packet_filter_t *filter)
+{
+    if (!filter) return;
+    
+    filter->call_count = 0;
+    filter->drop_count = 0;
+    filter->total_time_ns = 0;
+}
+
+/* Fast packet processing using optimized filter chain */
+int process_filter_chain(filter_chain_t *chain, void *pkt, size_t len)
+{
+    int i;
+    int result;
+    
+    if (unlikely(chain->enabled_count == 0)) {
+        return FILTER_ACTION_PASS;
+    }
+    
+    /* Process filters using fast handlers array */
+    for (i = 0; i < chain->enabled_count; i++) {
+        result = chain->fast_handlers[i](pkt, len, chain->fast_data[i]);
+        if (unlikely(result == FILTER_ACTION_DROP)) {
+            return FILTER_ACTION_DROP;
+        }
+    }
+    
+    return FILTER_ACTION_PASS;
+}

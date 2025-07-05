@@ -144,6 +144,15 @@ static bridge_t *add_bridge(bridge_t **head)
 
    if ((bridge = malloc(sizeof(*bridge))) != NULL) {
       memset(bridge, 0, sizeof(*bridge));
+      
+      /* Initialize optimized filter chain */
+      bridge->filter_chain = create_filter_chain();
+      if (bridge->filter_chain == NULL) {
+          fprintf(stderr, "Failed to create filter chain for bridge\n");
+          free(bridge);
+          return NULL;
+      }
+      
       bridge->next = *head;
       *head = bridge;
    }

@@ -34,6 +34,8 @@
 
 #include "nio.h"
 #include "packet_filter.h"
+#include "buffer_pool.h"
+#include "buffer_pool.h"
 
 #define NAME          "ubridge"
 #define VERSION       "0.9.19"
@@ -70,21 +72,46 @@ typedef struct {
     pthread_mutex_t lock;
 } pcap_capture_t;
 
+/* Cache-aligned bridge structure for optimal performance */
 typedef struct bridge {
-  char *name;
-  int running;
+  /* Hot data - frequently accessed fields grouped together */
+  int running;                          /* Bridge state */
+  nio_t *source_nio;                   /* Source NIO pointer */
+  nio_t *destination_nio;              /* Destination NIO pointer */
+  
+  /* Filter chain - optimized for Phase 2 */
+  packet_filter_t *packet_filters;     /* Legacy linked list (backward compatibility) */
+  filter_chain_t *filter_chain;        /* Optimized array-based chain */
+  
+  /* Performance monitoring */
+  uint64_t packets_processed;
+  uint64_t bytes_processed;
+  uint64_t packets_dropped;
+  uint64_t last_activity_time;
+  
+  /* Threading data */
   pthread_t source_tid;
   pthread_t destination_tid;
-  nio_t *source_nio;
-  nio_t *destination_nio;
-  pcap_capture_t *capture;
-  packet_filter_t *packet_filters;
-  struct bridge *next;
-} bridge_t;
+  
+  /* Less frequently accessed data */
+  char *name;                          /* Bridge name */
+  pcap_capture_t *capture;             /* PCAP capture */
+  struct bridge *next;                 /* Next bridge in list */
+  
+  /* Padding to align to cache line */
+  char padding[64];
+} __attribute__((aligned(64))) bridge_t;
 
 extern bridge_t *bridge_list;
 extern pthread_mutex_t global_lock;
 extern int debug_level;
+
+/* Global buffer pool for packet processing */
+extern buffer_pool_t *global_packet_pool;
+
+/* Buffer pool management functions */
+int init_global_buffer_pool(void);
+void cleanup_global_buffer_pool(void);
 
 void ubridge_reset();
 void *source_nio_listener(void *data);
