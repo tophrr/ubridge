@@ -53,6 +53,17 @@
 #define perror(msg) \
         do { int en = errno; perror(msg); errno = en; } while (0)
 
+/* Branch prediction macros for performance optimization */
+#ifdef __GNUC__
+#define likely(x)       __builtin_expect(!!(x), 1)
+#define unlikely(x)     __builtin_expect(!!(x), 0)
+#define prefetch(x)     __builtin_prefetch(x, 0, 3)
+#else
+#define likely(x)       (x)
+#define unlikely(x)     (x)
+#define prefetch(x)     do { } while (0)
+#endif
+
 typedef struct {
     pcap_t *fd;
     pcap_dumper_t *dumper;

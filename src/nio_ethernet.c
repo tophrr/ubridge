@@ -65,6 +65,11 @@ static pcap_t *nio_ethernet_open(char *device)
       goto pcap_error;
 #endif /* CYGWIN */
 
+   /* Performance optimization: set buffer size for better performance */
+   if (pcap_set_buffer_size(p, 1024 * 1024) != 0) {
+      /* Not critical if this fails, continue anyway */
+   }
+
    return p;
 
  pcap_error:

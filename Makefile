@@ -40,6 +40,10 @@ OBJ     =   $(SRC:.c=.o)
 
 CC      ?=   gcc
 
+# Performance optimizations (Phase 1)
+CFLAGS  +=   -O3 -march=native -mtune=native -flto
+CFLAGS  +=   -DNDEBUG -fno-semantic-interposition
+CFLAGS  +=   -funroll-loops -fprefetch-loop-arrays
 CFLAGS  +=   -Wall
 
 BINDIR  =   /usr/local/bin
@@ -76,7 +80,7 @@ endif
 ##############################
 
 $(NAME)	: $(OBJ)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $(NAME) $(OBJ) $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -flto -o $(NAME) $(OBJ) $(LIBS)
 
 .PHONY: clean
 

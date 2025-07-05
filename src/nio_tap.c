@@ -79,6 +79,16 @@ static int nio_tap_open(char *tap_devname)
 
       strcpy(tap_devname, ifr.ifr_name);
    }
+
+   /* Performance optimization: set socket buffer sizes if possible */
+   int bufsize = 1024 * 1024; // 1MB
+   if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize)) < 0) {
+      /* TAP devices may not support this, continue anyway */
+   }
+   if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize)) < 0) {
+      /* TAP devices may not support this, continue anyway */
+   }
+
    return(fd);
 #else
    int i, fd = -1;

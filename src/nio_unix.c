@@ -48,6 +48,15 @@ static int create_unix_socket(char *local_filename)
        return (-1);
     }
 
+    /* Performance optimization: increase socket buffer sizes */
+    int bufsize = 1024 * 1024; // 1MB
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize)) < 0) {
+       /* Not critical if this fails, continue anyway */
+    }
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize)) < 0) {
+       /* Not critical if this fails, continue anyway */
+    }
+
    return (fd);
 }
 

@@ -62,6 +62,17 @@ static int udp_connect(int local_port, char *remote_host, int remote_port)
         continue;
      }
 
+     /* Performance optimization: increase socket buffer sizes */
+     int bufsize = 1024 * 1024; // 1MB
+     if (setsockopt(sck, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize)) < 0) {
+        perror("udp_connect: setsockopt SO_RCVBUF");
+        /* Continue anyway - not critical */
+     }
+     if (setsockopt(sck, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize)) < 0) {
+        perror("udp_connect: setsockopt SO_SNDBUF");
+        /* Continue anyway - not critical */
+     }
+
      /* bind to the local port */
      memset(&st, 0, sizeof(st));
 

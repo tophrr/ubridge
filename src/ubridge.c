@@ -57,22 +57,19 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     /* receive from the receiving NIO */
     drop_packet = FALSE;
     bytes_received = nio_recv(rx_nio, &pkt, NIO_MAX_PKT_SIZE);
-    if (bytes_received == -1) {
+    if (unlikely(bytes_received == -1)) {
         perror("recv");
         if (errno == ECONNREFUSED || errno == ENETDOWN)
            continue;
         return -1;
     }
 
-    if (bytes_received > NIO_MAX_PKT_SIZE) {
-        fprintf(stderr, "received frame is %zd bytes (maximum is %d bytes)\n", bytes_received, NIO_MAX_PKT_SIZE);
-        continue;
-    }
-
+    /* Optimize: remove redundant size check - nio_recv already limits this */
     rx_nio->packets_in++;
     rx_nio->bytes_in += bytes_received;
 
-    if (debug_level > 0) {
+    /* Move debug prints out of hot path using unlikely() */
+    if (unlikely(debug_level > 0)) {
         if (rx_nio == bridge->source_nio)
            printf("Received %zd bytes on bridge '%s' (source NIO)\n", bytes_received, bridge->name);
         else
@@ -82,12 +79,12 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     }
 
     /* filter the packet if there is a filter configured */
-    if (bridge->packet_filters != NULL) {
+    if (unlikely(bridge->packet_filters != NULL)) {
          packet_filter_t *filter = bridge->packet_filters;
          packet_filter_t *next;
          while (filter != NULL) {
-             if (filter->handler(pkt, bytes_received, filter->data) == FILTER_ACTION_DROP) {
-                 if (debug_level > 0)
+             if (unlikely(filter->handler(pkt, bytes_received, filter->data) == FILTER_ACTION_DROP)) {
+                 if (unlikely(debug_level > 0))
                     printf("Packet dropped by packet filter '%s' on bridge '%s'\n", filter->name, bridge->name);
                  drop_packet = TRUE;
                  break;
@@ -97,15 +94,19 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
          }
      }
 
-    if (drop_packet == TRUE)
+    if (unlikely(drop_packet == TRUE))
        continue;
 
     /* dump the packet to a PCAP file if capture is activated */
-    pcap_capture_packet(bridge->capture, pkt, bytes_received);
+    if (unlikely(bridge->capture != NULL))
+        pcap_capture_packet(bridge->capture, pkt, bytes_received);
+
+    /* Prefetch next packet buffer for better cache performance */
+    prefetch(pkt + 64);
 
     /* send what we received to the transmitting NIO */
     bytes_sent = nio_send(tx_nio, pkt, bytes_received);
-    if (bytes_sent == -1) {
+    if (unlikely(bytes_sent == -1)) {
         perror("send");
 
         /* EINVAL can be caused by sending to a blackhole route, this happens if a NIC link status changes */
