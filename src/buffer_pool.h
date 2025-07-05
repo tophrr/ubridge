@@ -30,9 +30,9 @@
 #define CACHE_LINE_SIZE 64
 #define ALIGN_TO_CACHE_LINE(x) (((x) + CACHE_LINE_SIZE - 1) & ~(CACHE_LINE_SIZE - 1))
 
-/* Default buffer pool configuration */
+/* Default buffer pool configuration - optimized for performance */
 #define DEFAULT_BUFFER_SIZE     65536   /* 64KB packets */
-#define DEFAULT_BUFFER_COUNT    1024    /* Number of buffers */
+#define DEFAULT_BUFFER_COUNT    2048    /* Optimal number of buffers for most workloads */
 #define MIN_BUFFER_COUNT        64      /* Minimum buffers */
 #define MAX_BUFFER_COUNT        16384   /* Maximum buffers */
 

@@ -45,7 +45,7 @@
 char *config_file = CONFIG_FILE;
 pthread_mutex_t global_lock = PTHREAD_MUTEX_INITIALIZER;
 bridge_t *bridge_list = NULL;
-int debug_level = 0;
+int debug_level = 1;  /* Set normal debug level by default */
 int hypervisor_mode = 0;
 
 /* Global buffer pool for packet processing */
@@ -398,6 +398,13 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
            exit(EXIT_FAILURE);
        }
        printf("Event loop initialized for event-driven mode\n");
+       
+       /* Set optimal defaults for performance */
+       set_event_loop_batch_size(global_event_loop, DEFAULT_BATCH_SIZE);
+       enable_event_loop_zero_copy(global_event_loop, 1);  /* Enable zero-copy by default */
+       if (debug_level > 0) {
+           printf("Optimal defaults applied: batch_size=%d, zero_copy=enabled\n", DEFAULT_BATCH_SIZE);
+       }
        
        /* Apply CPU affinity optimization to event loop */
        if (cpu_affinity_is_available()) {
