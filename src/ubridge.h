@@ -109,6 +109,10 @@ extern int debug_level;
 /* Global buffer pool for packet processing */
 extern buffer_pool_t *global_packet_pool;
 
+/* Event-driven mode configuration */
+extern int event_driven_mode;
+extern struct event_loop *global_event_loop;
+
 /* Buffer pool management functions */
 int init_global_buffer_pool(void);
 void cleanup_global_buffer_pool(void);

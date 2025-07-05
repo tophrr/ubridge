@@ -30,6 +30,8 @@ SRC     =   src/ubridge.c               \
             src/parse.c                 \
             src/packet_filter.c         \
             src/buffer_pool.c           \
+            src/event_loop.c            \
+            src/packet_batch.c          \
             src/pcap_capture.c          \
             src/pcap_filter.c           \
             src/hypervisor.c            \
@@ -66,7 +68,8 @@ ifeq ($(shell uname), Linux)
     SRC += src/nio_linux_raw.c             \
            src/hypervisor_docker.c         \
            src/hypervisor_iol_bridge.c     \
-           src/hypervisor_brctl.c   \
+           src/hypervisor_brctl.c          \
+           src/epoll_manager.c             \
            src/netlink/nl.c
 endif
 

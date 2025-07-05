@@ -20,6 +20,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "parse.h"
 #include "nio_udp.h"
@@ -28,6 +29,8 @@
 #include "nio_tap.h"
 #include "pcap_capture.h"
 #include "pcap_filter.h"
+#include "event_loop.h"
+#include "ubridge.h"
 
 #ifdef LINUX_RAW
 #include "nio_linux_raw.h"
@@ -36,6 +39,11 @@
 #ifdef __APPLE__
 #include "nio_fusion_vmnet.h"
 #endif
+
+/* External global variables */
+extern int event_driven_mode;
+extern event_loop_t *global_event_loop;
+extern int debug_level;
 
 static nio_t *create_udp_tunnel(const char *params)
 {
@@ -188,6 +196,60 @@ static void parse_filter(dictionary *ubridge_config, const char *bridge_name, br
     }
 }
 
+static void parse_global_settings(dictionary *ubridge_config)
+{
+    const char *value;
+    
+    /* Parse event-driven mode setting */
+    if (getstr(ubridge_config, "global", "event_driven_mode", &value)) {
+        if (strcasecmp(value, "true") == 0 || strcasecmp(value, "1") == 0 || strcasecmp(value, "yes") == 0) {
+            event_driven_mode = 1;
+            printf("Event-driven mode enabled via configuration\n");
+        } else {
+            event_driven_mode = 0;
+        }
+    }
+    
+    /* Parse batch size setting */
+    if (getstr(ubridge_config, "global", "batch_size", &value)) {
+        int batch_size = atoi(value);
+        if (batch_size > 0 && batch_size <= MAX_BATCH_SIZE) {
+            if (global_event_loop) {
+                set_event_loop_batch_size(global_event_loop, batch_size);
+            }
+            printf("Packet batch size set to %d\n", batch_size);
+        }
+    }
+    
+    /* Parse buffer pool size setting */
+    if (getstr(ubridge_config, "global", "buffer_pool_size", &value)) {
+        int pool_size = atoi(value);
+        if (pool_size > 0) {
+            /* Note: This would require buffer pool to support dynamic resizing */
+            printf("Buffer pool size setting: %d (requires restart to take effect)\n", pool_size);
+        }
+    }
+    
+    /* Parse zero-copy setting */
+    if (getstr(ubridge_config, "global", "enable_zero_copy", &value)) {
+        if (strcasecmp(value, "true") == 0 || strcasecmp(value, "1") == 0 || strcasecmp(value, "yes") == 0) {
+            if (global_event_loop) {
+                enable_event_loop_zero_copy(global_event_loop, 1);
+            }
+            printf("Zero-copy optimizations enabled\n");
+        }
+    }
+    
+    /* Parse debug level override */
+    if (getstr(ubridge_config, "global", "debug_level", &value)) {
+        int level = atoi(value);
+        if (level >= 0) {
+            debug_level = level;
+            printf("Debug level set to %d via configuration\n", level);
+        }
+    }
+}
+
 int parse_config(char *filename, bridge_t **bridges)
 {
     dictionary *ubridge_config = NULL;
@@ -199,6 +261,9 @@ int parse_config(char *filename, bridge_t **bridges)
        return FALSE;
     }
 
+    /* Parse global settings first */
+    parse_global_settings(ubridge_config);
+
     nsec = iniparser_getnsec(ubridge_config);
     for (i = 0; i < nsec; i++) {
         bridge_t *bridge;
@@ -206,6 +271,12 @@ int parse_config(char *filename, bridge_t **bridges)
         nio_t *destination_nio = NULL;
 
         bridge_name = iniparser_getsecname(ubridge_config, i);
+        
+        /* Skip the global section */
+        if (strcasecmp(bridge_name, "global") == 0) {
+            continue;
+        }
+        
         printf("Parsing %s\n", bridge_name);
         if (getstr(ubridge_config, bridge_name, "source_udp", &value))
            source_nio = create_udp_tunnel(value);

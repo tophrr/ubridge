@@ -37,6 +37,7 @@
 #include "packet_filter.h"
 #include "hypervisor.h"
 #include "buffer_pool.h"
+#include "event_loop.h"
 #ifdef __linux__
 #include "hypervisor_iol_bridge.h"
 #endif
@@ -49,6 +50,10 @@ int hypervisor_mode = 0;
 
 /* Global buffer pool for packet processing */
 buffer_pool_t *global_packet_pool = NULL;
+
+/* Event-driven mode configuration */
+int event_driven_mode = 0;
+event_loop_t *global_event_loop = NULL;
 
 static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
 {
@@ -211,10 +216,21 @@ static void free_bridges(bridge_t *bridge)
   while (bridge != NULL) {
     if (bridge->name)
        free(bridge->name);
-    pthread_cancel(bridge->source_tid);
-    pthread_join(bridge->source_tid, NULL);
-    pthread_cancel(bridge->destination_tid);
-    pthread_join(bridge->destination_tid, NULL);
+       
+    /* Handle cleanup based on mode */
+    if (event_driven_mode) {
+        /* Event-driven mode: remove from event loop */
+        if (global_event_loop) {
+            event_loop_remove_bridge(global_event_loop, bridge);
+        }
+    } else {
+        /* Traditional threading mode: cancel and join threads */
+        pthread_cancel(bridge->source_tid);
+        pthread_join(bridge->source_tid, NULL);
+        pthread_cancel(bridge->destination_tid);
+        pthread_join(bridge->destination_tid, NULL);
+    }
+    
     free_nio(bridge->source_nio);
     free_nio(bridge->destination_nio);
     free_pcap_capture(bridge->capture);
@@ -292,12 +308,20 @@ void signal_gen_handler(int sig)
       case SIGTERM:
       case SIGINT:
          /* CTRL+C has been pressed */
-         if (hypervisor_mode)
+         if (hypervisor_mode) {
             hypervisor_stopsig();
+         } else if (event_driven_mode && global_event_loop) {
+            /* Stop the event loop */
+            event_loop_stop(global_event_loop);
+         }
          break;
 #ifndef CYGWIN
          /* CTRL+C has been pressed */
       case SIGHUP:
+         if (event_driven_mode && global_event_loop) {
+            /* For SIGHUP, we want to reload configuration, so stop the event loop */
+            event_loop_stop(global_event_loop);
+         }
          break;
 #endif
       default:
@@ -335,6 +359,16 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
        exit(EXIT_FAILURE);
    }
 
+   /* Initialize event-driven mode if enabled */
+   if (event_driven_mode) {
+       global_event_loop = create_event_loop();
+       if (!global_event_loop) {
+           fprintf(stderr, "Failed to initialize event loop\n");
+           exit(EXIT_FAILURE);
+       }
+       printf("Event loop initialized for event-driven mode\n");
+   }
+
    if (hypervisor_mode) {
        struct sigaction act;
 
@@ -355,23 +389,70 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
 #endif
    }
    else {
-      sigset_t sigset;
-      int sig;
+      int sig = 0; /* Initialize signal variable */
+      
+      if (event_driven_mode) {
+         /* Event-driven mode: use signal handlers */
+         struct sigaction act;
+
+         memset(&act, 0, sizeof(act));
+         act.sa_handler = signal_gen_handler;
+         act.sa_flags = SA_RESTART;
+#ifndef CYGWIN
+         sigaction(SIGHUP, &act, NULL);
+#endif
+         sigaction(SIGTERM, &act, NULL);
+         sigaction(SIGINT, &act, NULL);
+         sigaction(SIGPIPE, &act, NULL);
+      } else {
+         /* Traditional threading mode: use sigwait */
+         sigset_t sigset;
+         
+         sigemptyset(&sigset);
+         sigaddset(&sigset, SIGINT);
+         sigaddset(&sigset, SIGTERM);
+#ifndef CYGWIN
+         sigaddset(&sigset, SIGHUP);
+#endif
+         pthread_sigmask(SIG_BLOCK, &sigset, NULL);
+      }
 
       iniparser_set_error_callback(&iniparser_error_handler);
-      sigemptyset(&sigset);
-      sigaddset(&sigset, SIGINT);
-      sigaddset(&sigset, SIGTERM);
-#ifndef CYGWIN
-      sigaddset(&sigset, SIGHUP);
-#endif
-      pthread_sigmask(SIG_BLOCK, &sigset, NULL);
 
       while (1) {
          if (!parse_config(config_file, &bridge_list))
             break;
-         create_threads(bridge_list);
-         sigwait(&sigset, &sig);
+            
+         if (event_driven_mode) {
+            /* Event-driven mode: register bridges with event loop */
+            bridge_t *bridge = bridge_list;
+            while (bridge != NULL) {
+                if (event_loop_add_bridge(global_event_loop, bridge) != 0) {
+                    fprintf(stderr, "Failed to add bridge '%s' to event loop\n", bridge->name);
+                    exit(EXIT_FAILURE);
+                }
+                bridge = bridge->next;
+            }
+            
+            printf("Running in event-driven mode with %zu bridges\n", global_event_loop->bridge_count);
+            /* Run the event loop */
+            event_loop_run(global_event_loop);
+            /* Event loop stopped, check for signals */
+            sig = SIGTERM; /* Assume termination when event loop stops */
+         } else {
+            /* Traditional threading mode */
+            sigset_t sigset;
+            
+            sigemptyset(&sigset);
+            sigaddset(&sigset, SIGINT);
+            sigaddset(&sigset, SIGTERM);
+#ifndef CYGWIN
+            sigaddset(&sigset, SIGHUP);
+#endif
+            
+            create_threads(bridge_list);
+            sigwait(&sigset, &sig);
+         }
 
          free_bridges(bridge_list);
          bridge_list = NULL;
@@ -379,6 +460,12 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
             break;
          printf("Reloading configuration\n");
      }
+   }
+   
+   /* Cleanup */
+   if (event_driven_mode && global_event_loop) {
+       destroy_event_loop(global_event_loop);
+       global_event_loop = NULL;
    }
    
    /* Cleanup global buffer pool before exit */
@@ -421,6 +508,7 @@ static void print_usage(const char *program_name)
          "  -f <file>                    : Specify a INI configuration file (default: %s)\n"
          "  -H [<ip_address>:]<tcp_port> : Run in hypervisor mode\n"
          "  -e                           : Display all available network devices and exit\n"
+         "  -E                           : Enable event-driven mode (epoll/kqueue)\n"
          "  -d <level>                   : Debug level\n"
          "  -v                           : Print version and exit\n",
          program_name,
@@ -438,7 +526,7 @@ int main(int argc, char **argv)
   setvbuf(stdout, NULL, _IOLBF, 0);
   setvbuf(stderr, NULL, _IOLBF, 0);
 
-  while ((opt = getopt(argc, argv, "hved:f:H:")) != -1) {
+  while ((opt = getopt(argc, argv, "hveEd:f:H:")) != -1) {
     switch (opt) {
       case 'H':
         hypervisor_mode = 1;
@@ -457,6 +545,10 @@ int main(int argc, char **argv)
            hypervisor_ip_address[len] = '\0';
            hypervisor_tcp_port = atoi(index + 1);
         }
+        break;
+      case 'E':
+        event_driven_mode = 1;
+        printf("Event-driven mode enabled\n");
         break;
 	  case 'v':
 	    printf("%s version %s\n", NAME, VERSION);
