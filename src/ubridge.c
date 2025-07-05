@@ -52,7 +52,7 @@ int hypervisor_mode = 0;
 buffer_pool_t *global_packet_pool = NULL;
 
 /* Event-driven mode configuration */
-int event_driven_mode = 0;
+int event_driven_mode = 1;  /* Enable event-driven mode by default */
 event_loop_t *global_event_loop = NULL;
 
 static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
@@ -548,7 +548,8 @@ static void print_usage(const char *program_name)
          "  -f <file>                    : Specify a INI configuration file (default: %s)\n"
          "  -H [<ip_address>:]<tcp_port> : Run in hypervisor mode\n"
          "  -e                           : Display all available network devices and exit\n"
-         "  -E                           : Enable event-driven mode (epoll/kqueue)\n"
+         "  -E                           : Force enable event-driven mode (default: enabled)\n"
+         "  -T                           : Use traditional threading mode (disable event-driven)\n"
          "  -d <level>                   : Debug level\n"
          "  -v                           : Print version and exit\n",
          program_name,
@@ -566,7 +567,7 @@ int main(int argc, char **argv)
   setvbuf(stdout, NULL, _IOLBF, 0);
   setvbuf(stderr, NULL, _IOLBF, 0);
 
-  while ((opt = getopt(argc, argv, "hveEd:f:H:")) != -1) {
+  while ((opt = getopt(argc, argv, "hveETd:f:H:")) != -1) {
     switch (opt) {
       case 'H':
         hypervisor_mode = 1;
@@ -588,7 +589,11 @@ int main(int argc, char **argv)
         break;
       case 'E':
         event_driven_mode = 1;
-        printf("Event-driven mode enabled\n");
+        printf("Event-driven mode explicitly enabled\n");
+        break;
+      case 'T':
+        event_driven_mode = 0;
+        printf("Traditional threading mode enabled\n");
         break;
 	  case 'v':
 	    printf("%s version %s\n", NAME, VERSION);
@@ -610,6 +615,8 @@ int main(int argc, char **argv)
 	}
   }
   printf("uBridge version %s running with %s\n", VERSION, pcap_lib_version());
+  printf("Mode: %s (Phase 4 optimizations enabled)\n", 
+         event_driven_mode ? "Event-driven" : "Traditional threading");
   ubridge(hypervisor_ip_address, hypervisor_tcp_port);
   return (EXIT_SUCCESS);
 }
