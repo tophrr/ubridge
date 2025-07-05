@@ -226,8 +226,141 @@ void clear_packet_batch(packet_batch_t *batch)
     }
     
     batch->count = 0;
-    
-    if (debug_level > 2) {
-        printf("Cleared packet batch: capacity=%d\n", batch->capacity);
-    }
 }
+
+/* Default event callbacks for bridge processing */
+int bridge_read_callback(event_loop_t *loop, int fd, event_type_t event_type, void *data)
+{
+    bridge_t *bridge = (bridge_t*)data;
+    packet_batch_t *batch;
+    void *buffer;
+    ssize_t bytes_received;
+    int packets_received = 0;
+    
+    if (!loop || !bridge || event_type != EVENT_TYPE_READ) {
+        return -1;
+    }
+    
+    /* Get or create packet batch */
+    batch = loop->batch_pool;
+    if (!batch) {
+        batch = create_packet_batch(loop->batch_size);
+        if (!batch) {
+            return -1;
+        }
+        loop->batch_pool = batch;
+    }
+    
+    /* Set batch bridge and NIOs */
+    batch->bridge = bridge;
+    batch->source_nio = bridge->source_nio;
+    batch->destination_nio = bridge->destination_nio;
+    
+    /* Receive packets in batch if batching is enabled */
+    if (loop->enable_batching) {
+        while (batch->count < batch->capacity) {
+            /* Get buffer from pool */
+            buffer = get_buffer(loop->buffer_pool);
+            if (!buffer) {
+                break; /* Pool exhausted */
+            }
+            
+            /* Receive packet */
+            bytes_received = nio_recv(bridge->source_nio, buffer, NIO_MAX_PKT_SIZE);
+            if (bytes_received < 0) {
+                return_buffer(loop->buffer_pool, buffer);
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    break; /* No more data available */
+                }
+                log_event_loop_error("bridge_read_callback", "nio_recv failed");
+                break;
+            }
+            
+            /* Add packet to batch */
+            if (add_packet_to_batch(batch, buffer, bytes_received, NULL, 0) < 0) {
+                return_buffer(loop->buffer_pool, buffer);
+                break;
+            }
+            
+            packets_received++;
+            bridge->source_nio->packets_in++;
+            bridge->source_nio->bytes_in += bytes_received;
+        }
+        
+        /* Process the batch if we have packets */
+        if (batch->count > 0) {
+            process_packet_batch(loop, batch);
+            clear_packet_batch(batch);
+        }
+    } else {
+        /* Single packet processing (fallback) */
+        buffer = get_buffer(loop->buffer_pool);
+        if (buffer) {
+            bytes_received = nio_recv(bridge->source_nio, buffer, NIO_MAX_PKT_SIZE);
+            if (bytes_received >= 0) {
+                bridge->source_nio->packets_in++;
+                bridge->source_nio->bytes_in += bytes_received;
+                
+                /* Add to batch and process immediately */
+                add_packet_to_batch(batch, buffer, bytes_received, NULL, 0);
+                process_packet_batch(loop, batch);
+                clear_packet_batch(batch);
+                packets_received = 1;
+            } else {
+                return_buffer(loop->buffer_pool, buffer);
+            }
+        }
+    }
+    
+    if (debug_level > 2 && packets_received > 0) {
+        printf("Received %d packets on bridge '%s'\n", packets_received, bridge->name);
+    }
+    
+    return packets_received;
+}
+
+int bridge_write_callback(event_loop_t *loop, int fd, event_type_t event_type, void *data)
+{
+    /* Write events are handled during read processing */
+    /* This callback is mainly for flow control */
+    return 0;
+}
+
+int bridge_error_callback(event_loop_t *loop, int fd, event_type_t event_type, void *data)
+{
+    bridge_t *bridge = (bridge_t*)data;
+    
+    if (debug_level > 0) {
+        printf("Error event on bridge '%s', fd %d\n", 
+               bridge ? bridge->name : "unknown", fd);
+    }
+    
+    /* Remove the problematic handler */
+    remove_event_handler(loop, fd);
+    
+    return -1;
+}
+
+/* Zero-copy transfer functions (Linux only) */
+#ifdef __linux__
+int zero_copy_transfer(int in_fd, int out_fd, size_t count)
+{
+    ssize_t bytes_transferred = sendfile(out_fd, in_fd, NULL, count);
+    
+    if (bytes_transferred < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return 0; /* Try again later */
+        }
+        return -1;
+    }
+    
+    return bytes_transferred;
+}
+
+int setup_packet_mmap(nio_t *nio)
+{
+    /* TODO: Implement packet MMAP for high-performance packet capture */
+    /* This would use PACKET_MMAP to avoid kernel-userspace copies */
+    return 0;
+}
+#endif

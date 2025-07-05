@@ -163,6 +163,9 @@ void clear_packet_batch(packet_batch_t *batch);
 #ifdef __linux__
 int zero_copy_transfer(int in_fd, int out_fd, size_t count);
 int setup_packet_mmap(nio_t *nio);
+int zero_copy_sendfile(int out_fd, int in_fd, off_t *offset, size_t count);
+int setup_zero_copy_buffers(event_loop_t *loop);
+int can_use_zero_copy(int fd1, int fd2);
 #endif
 
 /* Performance monitoring */
@@ -175,6 +178,10 @@ int configure_event_loop(event_loop_t *loop, const char *config_section);
 int set_event_loop_batch_size(event_loop_t *loop, int batch_size);
 int set_event_loop_timeout(event_loop_t *loop, int timeout_ms);
 int enable_event_loop_zero_copy(event_loop_t *loop, int enable);
+
+/* CPU affinity and performance optimization */
+int event_loop_configure_affinity(event_loop_t *loop);
+int event_loop_optimize_numa(event_loop_t *loop);
 
 /* Platform-specific implementations */
 #ifdef __linux__
@@ -202,5 +209,6 @@ void log_event_loop_error(const char *function, const char *message);
 int bridge_read_callback(event_loop_t *loop, int fd, event_type_t event_type, void *data);
 int bridge_write_callback(event_loop_t *loop, int fd, event_type_t event_type, void *data);
 int bridge_error_callback(event_loop_t *loop, int fd, event_type_t event_type, void *data);
+int bridge_traditional_read(event_loop_t *loop, bridge_t *bridge, nio_t *source_nio, nio_t *dest_nio);
 
 #endif /* !EVENT_LOOP_H_ */

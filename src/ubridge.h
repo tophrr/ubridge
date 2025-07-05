@@ -36,6 +36,12 @@
 #include "packet_filter.h"
 #include "buffer_pool.h"
 #include "buffer_pool.h"
+#include "cpu_affinity.h"
+#include "simd_optimizations.h"
+
+#ifdef HAVE_AF_XDP
+#include "nio_af_xdp.h"
+#endif
 
 #define NAME          "ubridge"
 #define VERSION       "0.9.19"
@@ -112,6 +118,10 @@ extern buffer_pool_t *global_packet_pool;
 /* Event-driven mode configuration */
 extern int event_driven_mode;
 extern struct event_loop *global_event_loop;
+
+#ifdef HAVE_EVENT_DRIVEN
+#include "event_loop.h"
+#endif
 
 /* Buffer pool management functions */
 int init_global_buffer_pool(void);

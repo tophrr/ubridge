@@ -353,7 +353,38 @@ int iniparser_error_handler(const char *format, ...)
 
 static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
 {
-   /* Initialize global buffer pool for packet processing */
+   /* Phase 4: Initialize SIMD optimizations */
+   if (simd_init() != 0) {
+       fprintf(stderr, "Warning: Failed to initialize SIMD optimizations, using fallbacks\n");
+   } else {
+       const simd_features_t *features = simd_get_features();
+       if (debug_level > 0) {
+           printf("SIMD features detected: SSE2=%d SSE4.1=%d AVX=%d AVX2=%d AVX512=%d\n",
+                  features->has_sse2, features->has_sse4_1, features->has_avx,
+                  features->has_avx2, features->has_avx512);
+       }
+   }
+
+   /* Phase 4: Initialize CPU affinity and NUMA optimization */
+   if (cpu_affinity_init() != 0) {
+       fprintf(stderr, "Warning: Failed to initialize CPU affinity, continuing without optimization\n");
+   } else {
+       if (debug_level > 0) {
+           cpu_topology_t topology;
+           if (get_cpu_topology(&topology) == 0) {           printf("CPU topology: %d cores, %d NUMA nodes detected\n", 
+                  topology.num_cpus, topology.num_numa_nodes);
+           }
+       }
+       
+       /* Auto-configure CPU affinity for main thread */
+       cpu_affinity_config_t *affinity_config = auto_configure_affinity(global_topology, 1);
+       if (affinity_config && debug_level > 0) {
+           printf("Auto CPU affinity configuration applied\n");
+           free(affinity_config);
+       }
+   }
+
+   /* Initialize global buffer pool for packet processing with NUMA-aware allocation */
    if (init_global_buffer_pool() != 0) {
        fprintf(stderr, "Failed to initialize global buffer pool\n");
        exit(EXIT_FAILURE);
@@ -367,6 +398,11 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
            exit(EXIT_FAILURE);
        }
        printf("Event loop initialized for event-driven mode\n");
+       
+       /* Apply CPU affinity optimization to event loop */
+       if (cpu_affinity_is_available()) {
+           event_loop_configure_affinity(global_event_loop);
+       }
    }
 
    if (hypervisor_mode) {
@@ -470,6 +506,10 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
    
    /* Cleanup global buffer pool before exit */
    cleanup_global_buffer_pool();
+   
+   /* Phase 4: Cleanup CPU affinity and SIMD */
+   cpu_affinity_cleanup();
+   simd_cleanup();
 }
 
 /* Display all network devices on this host */

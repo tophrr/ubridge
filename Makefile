@@ -36,7 +36,10 @@ SRC     =   src/ubridge.c               \
             src/pcap_filter.c           \
             src/hypervisor.c            \
             src/hypervisor_parser.c     \
-            src/hypervisor_bridge.c
+            src/hypervisor_bridge.c     \
+            src/cpu_affinity.c          \
+            src/simd_optimizations.c    \
+            src/nio_af_xdp.c
 
 
 OBJ     =   $(SRC:.c=.o)
@@ -48,6 +51,10 @@ CFLAGS  +=   -O3 -march=native -mtune=native -flto
 CFLAGS  +=   -DNDEBUG -fno-semantic-interposition
 CFLAGS  +=   -funroll-loops -fprefetch-loop-arrays
 CFLAGS  +=   -Wall
+
+# Phase 4: SIMD and advanced optimizations
+CFLAGS  +=   -msse2 -msse4.1 -mavx -mavx2
+CFLAGS  +=   -DHAVE_CPU_AFFINITY -DHAVE_SIMD
 
 BINDIR  =   /usr/local/bin
 
@@ -64,13 +71,25 @@ endif
 
 # RAW Ethernet support for Linux
 ifeq ($(shell uname), Linux)
-    CFLAGS += -DLINUX_RAW
+    CFLAGS += -DLINUX_RAW -DHAVE_EVENT_DRIVEN
     SRC += src/nio_linux_raw.c             \
            src/hypervisor_docker.c         \
            src/hypervisor_iol_bridge.c     \
            src/hypervisor_brctl.c          \
            src/epoll_manager.c             \
            src/netlink/nl.c
+    
+    # Check for AF_XDP support (requires libbpf and kernel headers)
+    ifneq ($(shell pkg-config --exists libbpf 2>/dev/null && echo yes),)
+        CFLAGS += -DHAVE_AF_XDP
+        LIBS += -lbpf
+    endif
+    
+    # Check for NUMA support
+    ifneq ($(shell pkg-config --exists libnuma 2>/dev/null && echo yes),)
+        CFLAGS += -DHAVE_NUMA
+        LIBS += -lnuma
+    endif
 endif
 
 ifeq ($(SYSTEM_INIPARSER),1)
